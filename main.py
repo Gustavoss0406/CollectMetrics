@@ -4,6 +4,7 @@ import time
 import aiohttp
 import logging
 from fastapi import FastAPI, HTTPException, Body
+from fastapi.middleware.cors import CORSMiddleware
 
 # Configura o logging para debug
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
