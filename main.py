@@ -6,14 +6,15 @@ import logging
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 
-# Configura o logging para debug
+# Configuração do logging para debug
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
 app = FastAPI()
 
+# Habilita CORS para todas as origens (ajuste conforme necessário)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Ou especifique os domínios permitidos
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -22,8 +23,8 @@ app.add_middleware(
 async def fetch_metrics(account_id: str, access_token: str):
     start_time = time.perf_counter()
     logging.debug(f"Iniciando fetch_metrics para account_id: {account_id}")
-
-    # Timeout total de 3 segundos para a sessão
+    
+    # Configura um timeout total de 3 segundos para evitar esperas longas
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         # URL e parâmetros para Insights
@@ -33,6 +34,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             "date_preset": "maximum",
             "access_token": access_token
         }
+        
         # URL e parâmetros para Campanhas Ativas
         campaigns_url = f"https://graph.facebook.com/v16.0/act_{account_id}/campaigns"
         filtering = json.dumps([{
@@ -46,7 +48,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             "access_token": access_token
         }
         
-        # Função auxiliar para realizar requisições GET e registrar o tempo
+        # Função auxiliar para realizar requisições GET e tratar erros
         async def fetch(url, params):
             req_start = time.perf_counter()
             logging.debug(f"Iniciando requisição GET para {url} com params: {params}")
@@ -69,7 +71,6 @@ async def fetch_metrics(account_id: str, access_token: str):
         
         if "data" not in insights_data or not insights_data["data"]:
             raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
-        
         insights_item = insights_data["data"][0]
         
         try:
@@ -121,17 +122,9 @@ async def fetch_metrics(account_id: str, access_token: str):
 
 @app.post("/metrics")
 async def get_metrics(payload: dict = Body(...)):
-    """
-    Endpoint único que recebe um JSON com "account_id" e "access_token" e retorna:
-      - Active Campaigns (número de campanhas ativas)
-      - Total Impressions
-      - Total Clicks
-      - CTR
-      - CPC
-      - Conversions (soma das conversões do tipo "offsite_conversion")
-      - Spent
-      - Engajamento (soma das ações de engajamento)
-    """
+    # Adiciona um log mostrando o body recebido
+    logging.debug(f"Body recebido no endpoint /metrics: {payload}")
+    
     account_id = payload.get("account_id")
     access_token = payload.get("access_token")
     if not account_id or not access_token:
@@ -139,6 +132,7 @@ async def get_metrics(payload: dict = Body(...)):
     try:
         result = await fetch_metrics(account_id, access_token)
     except Exception as e:
+        logging.error(f"Erro no endpoint /metrics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     return result
 
