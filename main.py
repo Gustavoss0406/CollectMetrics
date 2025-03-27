@@ -1,25 +1,23 @@
 import asyncio
 import json
-from fastapi import FastAPI, HTTPException, Body
 import aiohttp
-from aiocache import cached
-from aiocache.serializers import JsonSerializer
+from fastapi import FastAPI, HTTPException, Body
 
 app = FastAPI()
 
-@cached(ttl=30, serializer=JsonSerializer())
 async def fetch_metrics(account_id: str, access_token: str):
     # Configura um timeout total de 3 segundos para evitar esperas longas
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # Configurar URL e parâmetros para Insights
+        # URL e parâmetros para Insights
         insights_url = f"https://graph.facebook.com/v16.0/act_{account_id}/insights"
         params_insights = {
             "fields": "impressions,clicks,ctr,spend,cpc,actions",
             "date_preset": "maximum",
             "access_token": access_token
         }
-        # Configurar URL e parâmetros para Campanhas Ativas
+        
+        # URL e parâmetros para Campanhas Ativas
         campaigns_url = f"https://graph.facebook.com/v16.0/act_{account_id}/campaigns"
         filtering = json.dumps([{
             "field": "effective_status",
@@ -32,29 +30,24 @@ async def fetch_metrics(account_id: str, access_token: str):
             "access_token": access_token
         }
         
-        # Função auxiliar para realizar GET e tratar erros
+        # Função auxiliar para realizar requisições GET e tratar erros
         async def fetch(url, params):
             async with session.get(url, params=params) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    raise HTTPException(status_code=resp.status, detail=text)
+                    raise Exception(f"Erro {resp.status}: {text}")
                 return await resp.json()
         
-        try:
-            # Executa as requisições de Insights e Campanhas em paralelo
-            insights_data, campaigns_data = await asyncio.gather(
-                fetch(insights_url, params_insights),
-                fetch(campaigns_url, params_campaigns)
-            )
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Erro de conexão: {str(e)}")
+        # Executa as duas requisições em paralelo
+        insights_data, campaigns_data = await asyncio.gather(
+            fetch(insights_url, params_insights),
+            fetch(campaigns_url, params_campaigns)
+        )
         
-        # Verifica se há dados de insights
-        if "data" not in insights_data or len(insights_data["data"]) == 0:
-            raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
+        if "data" not in insights_data or not insights_data["data"]:
+            raise Exception("Nenhum dado de insights encontrado.")
         insights_item = insights_data["data"][0]
         
-        # Extração dos dados de insights (convertendo para float onde for necessário)
         try:
             impressions = float(insights_item.get("impressions", 0))
         except:
@@ -88,7 +81,7 @@ async def fetch_metrics(account_id: str, access_token: str):
         
         total_active_campaigns = len(campaigns_data.get("data", []))
         
-        return {
+        result = {
             "active_campaigns": total_active_campaigns,
             "total_impressions": impressions,
             "total_clicks": clicks,
@@ -98,22 +91,27 @@ async def fetch_metrics(account_id: str, access_token: str):
             "spent": spent,
             "engajamento": engagement
         }
+        return result
 
 @app.post("/metrics")
 async def get_metrics(payload: dict = Body(...)):
     """
     Endpoint único que recebe um JSON com "account_id" e "access_token" e retorna:
-      - Active Campaigns (número de campanhas ativas)
+      - Active Campaigns
       - Total Impressions
       - Total Clicks
       - CTR
       - CPC
-      - Conversions (soma das conversões do tipo "offsite_conversion")
+      - Conversions
       - Spent
-      - Engajamento (soma das ações de engajamento)
+      - Engajamento
     """
     account_id = payload.get("account_id")
     access_token = payload.get("access_token")
     if not account_id or not access_token:
         raise HTTPException(status_code=400, detail="É necessário fornecer 'account_id' e 'access_token' no body.")
-    return await fetch_metrics(account_id, access_token)
+    try:
+        result = await fetch_metrics(account_id, access_token)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return result
