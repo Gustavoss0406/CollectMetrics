@@ -10,6 +10,14 @@ logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Ou especifique os domínios permitidos
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 async def fetch_metrics(account_id: str, access_token: str):
     start_time = time.perf_counter()
     logging.debug(f"Iniciando fetch_metrics para account_id: {account_id}")
