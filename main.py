@@ -1,29 +1,23 @@
 from fastapi import FastAPI, HTTPException, Body
 import json
 import httpx
+from aiocache import cached
+from aiocache.serializers import JsonSerializer
 
 app = FastAPI()
 
-@app.post("/metrics")
-async def get_metrics(payload: dict = Body(...)):
-    """
-    Recebe um JSON contendo "account_id" e "access_token" e retorna as métricas:
-      - Active Campaigns (total de campanhas ativas)
-      - Total Impressions
-      - Total Clicks
-      - CTR
-      - CPC
-      - Conversions (soma das conversões "offsite_conversion")
-      - Spent
-      - Engajamento (soma de "page_engagement", "post_engagement" e "post_reaction")
-    """
-    account_id = payload.get("account_id")
-    access_token = payload.get("access_token")
-    
-    if not account_id or not access_token:
-        raise HTTPException(status_code=400, detail="É necessário fornecer 'account_id' e 'access_token' no body.")
-    
-    # Configura os parâmetros para insights e campanhas
+# Cria um cliente assíncrono global com timeout reduzido e conexão persistente
+client = httpx.AsyncClient(timeout=5.0)
+
+# Fechamento do cliente ao desligar a aplicação
+@app.on_event("shutdown")
+async def shutdown_event():
+    await client.aclose()
+
+# Função auxiliar com cache para otimizar chamadas repetidas
+@cached(ttl=30, serializer=JsonSerializer())
+async def fetch_metrics(account_id: str, access_token: str):
+    # URL e parâmetros para Insights
     insights_url = f"https://graph.facebook.com/v16.0/act_{account_id}/insights"
     params_insights = {
         "fields": "impressions,clicks,ctr,spend,cpc,actions",
@@ -31,6 +25,7 @@ async def get_metrics(payload: dict = Body(...)):
         "access_token": access_token
     }
     
+    # URL e parâmetros para campanhas ativas
     filtering = json.dumps([{
         "field": "effective_status",
         "operator": "IN",
@@ -43,58 +38,59 @@ async def get_metrics(payload: dict = Body(...)):
         "access_token": access_token
     }
     
-    # Usando httpx.AsyncClient para fazer chamadas em paralelo
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        insights_future = client.get(insights_url, params=params_insights)
-        campaigns_future = client.get(campaigns_url, params=params_campaigns)
-        
-        insights_response, campaigns_response = await httpx.gather(insights_future, campaigns_future)
+    # Executa as duas requisições em paralelo
+    try:
+        insights_resp, campaigns_resp = await httpx.gather(
+            client.get(insights_url, params=params_insights),
+            client.get(campaigns_url, params=params_campaigns)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erro na conexão: {str(e)}")
     
-    if insights_response.status_code != 200:
-        raise HTTPException(status_code=insights_response.status_code, detail=insights_response.text)
-    if campaigns_response.status_code != 200:
-        raise HTTPException(status_code=campaigns_response.status_code, detail=campaigns_response.text)
+    if insights_resp.status_code != 200:
+        raise HTTPException(status_code=insights_resp.status_code, detail=insights_resp.text)
+    if campaigns_resp.status_code != 200:
+        raise HTTPException(status_code=campaigns_resp.status_code, detail=campaigns_resp.text)
     
-    insights_data = insights_response.json()
-    campaigns_data = campaigns_response.json()
+    insights_data = insights_resp.json()
+    campaigns_data = campaigns_resp.json()
     
     if "data" not in insights_data or len(insights_data["data"]) == 0:
         raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
     
     insights_item = insights_data["data"][0]
     
+    # Extração dos dados de insights
     try:
         impressions = float(insights_item.get("impressions", 0))
     except:
-        impressions = 0
+        impressions = 0.0
     try:
         clicks = float(insights_item.get("clicks", 0))
     except:
-        clicks = 0
+        clicks = 0.0
     ctr = insights_item.get("ctr", None)
     try:
         cpc = float(insights_item.get("cpc", 0))
     except:
-        cpc = 0
+        cpc = 0.0
     try:
         spent = float(insights_item.get("spend", 0))
     except:
-        spent = 0
-    
-    # Conversions: soma dos valores da ação "offsite_conversion"
+        spent = 0.0
+
+    # Soma de conversões e engajamento
     conversions = 0.0
-    # Engajamento: soma dos valores de "page_engagement", "post_engagement" e "post_reaction"
-    engajamento = 0.0
+    engagement = 0.0
     for action in insights_item.get("actions", []):
-        action_type = action.get("action_type")
         try:
             value = float(action.get("value", 0))
         except:
             value = 0.0
-        if action_type == "offsite_conversion":
+        if action.get("action_type") == "offsite_conversion":
             conversions += value
-        if action_type in ["page_engagement", "post_engagement", "post_reaction"]:
-            engajamento += value
+        if action.get("action_type") in ["page_engagement", "post_engagement", "post_reaction"]:
+            engagement += value
 
     total_active_campaigns = len(campaigns_data.get("data", []))
     
@@ -106,5 +102,26 @@ async def get_metrics(payload: dict = Body(...)):
         "cpc": cpc,
         "conversions": conversions,
         "spent": spent,
-        "engajamento": engajamento
+        "engajamento": engagement
     }
+
+@app.post("/metrics")
+async def get_metrics(payload: dict = Body(...)):
+    """
+    Endpoint único que recebe um JSON com "account_id" e "access_token" e retorna:
+      - Active Campaigns (número de campanhas ativas)
+      - Total Impressions
+      - Total Clicks
+      - CTR
+      - CPC
+      - Conversions
+      - Spent
+      - Engajamento
+    """
+    account_id = payload.get("account_id")
+    access_token = payload.get("access_token")
+    
+    if not account_id or not access_token:
+        raise HTTPException(status_code=400, detail="É necessário fornecer 'account_id' e 'access_token' no body.")
+    
+    return await fetch_metrics(account_id, access_token)
