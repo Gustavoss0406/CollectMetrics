@@ -1,11 +1,11 @@
 from fastapi import FastAPI, HTTPException, Body
-import requests
 import json
+import httpx
 
 app = FastAPI()
 
 @app.post("/metrics")
-def get_metrics(payload: dict = Body(...)):
+async def get_metrics(payload: dict = Body(...)):
     """
     Recebe um JSON contendo "account_id" e "access_token" e retorna as métricas:
       - Active Campaigns (total de campanhas ativas)
@@ -23,7 +23,7 @@ def get_metrics(payload: dict = Body(...)):
     if not account_id or not access_token:
         raise HTTPException(status_code=400, detail="É necessário fornecer 'account_id' e 'access_token' no body.")
     
-    # --- Requisição para Insights ---
+    # Configura os parâmetros para insights e campanhas
     insights_url = f"https://graph.facebook.com/v16.0/act_{account_id}/insights"
     params_insights = {
         "fields": "impressions,clicks,ctr,spend,cpc,actions",
@@ -31,11 +31,32 @@ def get_metrics(payload: dict = Body(...)):
         "access_token": access_token
     }
     
-    response_insights = requests.get(insights_url, params=params_insights)
-    if response_insights.status_code != 200:
-        raise HTTPException(status_code=response_insights.status_code, detail=response_insights.text)
+    filtering = json.dumps([{
+        "field": "effective_status",
+        "operator": "IN",
+        "value": ["ACTIVE"]
+    }])
+    campaigns_url = f"https://graph.facebook.com/v16.0/act_{account_id}/campaigns"
+    params_campaigns = {
+        "fields": "id,name,status",
+        "filtering": filtering,
+        "access_token": access_token
+    }
     
-    insights_data = response_insights.json()
+    # Usando httpx.AsyncClient para fazer chamadas em paralelo
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        insights_future = client.get(insights_url, params=params_insights)
+        campaigns_future = client.get(campaigns_url, params=params_campaigns)
+        
+        insights_response, campaigns_response = await httpx.gather(insights_future, campaigns_future)
+    
+    if insights_response.status_code != 200:
+        raise HTTPException(status_code=insights_response.status_code, detail=insights_response.text)
+    if campaigns_response.status_code != 200:
+        raise HTTPException(status_code=campaigns_response.status_code, detail=campaigns_response.text)
+    
+    insights_data = insights_response.json()
+    campaigns_data = campaigns_response.json()
     
     if "data" not in insights_data or len(insights_data["data"]) == 0:
         raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
@@ -75,25 +96,6 @@ def get_metrics(payload: dict = Body(...)):
         if action_type in ["page_engagement", "post_engagement", "post_reaction"]:
             engajamento += value
 
-    # --- Requisição para Campanhas Ativas ---
-    filtering = json.dumps([{
-        "field": "effective_status",
-        "operator": "IN",
-        "value": ["ACTIVE"]
-    }])
-    
-    campaigns_url = f"https://graph.facebook.com/v16.0/act_{account_id}/campaigns"
-    params_campaigns = {
-        "fields": "id,name,status",
-        "filtering": filtering,
-        "access_token": access_token
-    }
-    
-    response_campaigns = requests.get(campaigns_url, params=params_campaigns)
-    if response_campaigns.status_code != 200:
-        raise HTTPException(status_code=response_campaigns.status_code, detail=response_campaigns.text)
-    
-    campaigns_data = response_campaigns.json()
     total_active_campaigns = len(campaigns_data.get("data", []))
     
     return {
