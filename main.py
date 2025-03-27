@@ -1,12 +1,20 @@
 import asyncio
 import json
+import time
 import aiohttp
+import logging
 from fastapi import FastAPI, HTTPException, Body
+
+# Configura o logging para debug
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
 app = FastAPI()
 
 async def fetch_metrics(account_id: str, access_token: str):
-    # Configura um timeout total de 3 segundos para evitar esperas longas
+    start_time = time.perf_counter()
+    logging.debug(f"Iniciando fetch_metrics para account_id: {account_id}")
+
+    # Timeout total de 3 segundos para a sessão
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         # URL e parâmetros para Insights
@@ -16,7 +24,6 @@ async def fetch_metrics(account_id: str, access_token: str):
             "date_preset": "maximum",
             "access_token": access_token
         }
-        
         # URL e parâmetros para Campanhas Ativas
         campaigns_url = f"https://graph.facebook.com/v16.0/act_{account_id}/campaigns"
         filtering = json.dumps([{
@@ -30,22 +37,30 @@ async def fetch_metrics(account_id: str, access_token: str):
             "access_token": access_token
         }
         
-        # Função auxiliar para realizar requisições GET e tratar erros
+        # Função auxiliar para realizar requisições GET e registrar o tempo
         async def fetch(url, params):
+            req_start = time.perf_counter()
+            logging.debug(f"Iniciando requisição GET para {url} com params: {params}")
             async with session.get(url, params=params) as resp:
+                req_end = time.perf_counter()
+                logging.debug(f"Requisição para {url} completada em {req_end - req_start:.3f} segundos com status {resp.status}")
                 if resp.status != 200:
                     text = await resp.text()
                     raise Exception(f"Erro {resp.status}: {text}")
                 return await resp.json()
         
-        # Executa as duas requisições em paralelo
-        insights_data, campaigns_data = await asyncio.gather(
-            fetch(insights_url, params_insights),
-            fetch(campaigns_url, params_campaigns)
-        )
+        try:
+            insights_data, campaigns_data = await asyncio.gather(
+                fetch(insights_url, params_insights),
+                fetch(campaigns_url, params_campaigns)
+            )
+        except Exception as e:
+            logging.error(f"Erro durante as requisições: {e}")
+            raise HTTPException(status_code=502, detail=f"Erro de conexão: {str(e)}")
         
         if "data" not in insights_data or not insights_data["data"]:
-            raise Exception("Nenhum dado de insights encontrado.")
+            raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
+        
         insights_item = insights_data["data"][0]
         
         try:
@@ -91,20 +106,22 @@ async def fetch_metrics(account_id: str, access_token: str):
             "spent": spent,
             "engajamento": engagement
         }
+        end_time = time.perf_counter()
+        logging.debug(f"fetch_metrics concluído em {end_time - start_time:.3f} segundos para account_id: {account_id}")
         return result
 
 @app.post("/metrics")
 async def get_metrics(payload: dict = Body(...)):
     """
     Endpoint único que recebe um JSON com "account_id" e "access_token" e retorna:
-      - Active Campaigns
+      - Active Campaigns (número de campanhas ativas)
       - Total Impressions
       - Total Clicks
       - CTR
       - CPC
-      - Conversions
+      - Conversions (soma das conversões do tipo "offsite_conversion")
       - Spent
-      - Engajamento
+      - Engajamento (soma das ações de engajamento)
     """
     account_id = payload.get("account_id")
     access_token = payload.get("access_token")
@@ -115,3 +132,7 @@ async def get_metrics(payload: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return result
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
