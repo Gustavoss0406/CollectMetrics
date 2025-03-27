@@ -1,27 +1,34 @@
-from fastapi import FastAPI, HTTPException
-import os
+from fastapi import FastAPI, HTTPException, Body
 import requests
 import json
 
 app = FastAPI()
 
-# As credenciais são obtidas via variáveis de ambiente.
-# Certifique-se de configurar as variáveis META_ADS_ACCOUNT_ID e META_ADS_ACCESS_TOKEN no ambiente do Railway.
-ACCOUNT_ID = os.getenv("META_ADS_ACCOUNT_ID")   # Exemplo: "609309324904292"
-ACCESS_TOKEN = os.getenv("META_ADS_ACCESS_TOKEN") # Exemplo: seu token de 60 dias
-
-@app.get("/metrics")
-def get_metrics():
-    # Verifica se as credenciais estão configuradas
-    if not ACCOUNT_ID or not ACCESS_TOKEN:
-        raise HTTPException(status_code=500, detail="Credenciais não configuradas corretamente.")
+@app.post("/metrics")
+def get_metrics(payload: dict = Body(...)):
+    """
+    Recebe um JSON contendo "account_id" e "access_token" e retorna as métricas:
+      - Active Campaigns (total de campanhas ativas)
+      - Total Impressions
+      - Total Clicks
+      - CTR
+      - CPC
+      - Conversions (soma das conversões "offsite_conversion")
+      - Spent
+      - Engajamento (soma de "page_engagement", "post_engagement" e "post_reaction")
+    """
+    account_id = payload.get("account_id")
+    access_token = payload.get("access_token")
     
-    # Requisição para Insights (métricas)
-    insights_url = f"https://graph.facebook.com/v16.0/act_{ACCOUNT_ID}/insights"
+    if not account_id or not access_token:
+        raise HTTPException(status_code=400, detail="É necessário fornecer 'account_id' e 'access_token' no body.")
+    
+    # --- Requisição para Insights ---
+    insights_url = f"https://graph.facebook.com/v16.0/act_{account_id}/insights"
     params_insights = {
-        "fields": "impressions,clicks,ctr,spend,cpc,actions,date_start,date_stop",
+        "fields": "impressions,clicks,ctr,spend,cpc,actions",
         "date_preset": "maximum",
-        "access_token": ACCESS_TOKEN
+        "access_token": access_token
     }
     
     response_insights = requests.get(insights_url, params=params_insights)
@@ -30,18 +37,56 @@ def get_metrics():
     
     insights_data = response_insights.json()
     
-    # Requisição para obter as campanhas ativas
+    if "data" not in insights_data or len(insights_data["data"]) == 0:
+        raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
+    
+    insights_item = insights_data["data"][0]
+    
+    try:
+        impressions = float(insights_item.get("impressions", 0))
+    except:
+        impressions = 0
+    try:
+        clicks = float(insights_item.get("clicks", 0))
+    except:
+        clicks = 0
+    ctr = insights_item.get("ctr", None)
+    try:
+        cpc = float(insights_item.get("cpc", 0))
+    except:
+        cpc = 0
+    try:
+        spent = float(insights_item.get("spend", 0))
+    except:
+        spent = 0
+    
+    # Conversions: soma dos valores da ação "offsite_conversion"
+    conversions = 0.0
+    # Engajamento: soma dos valores de "page_engagement", "post_engagement" e "post_reaction"
+    engajamento = 0.0
+    for action in insights_item.get("actions", []):
+        action_type = action.get("action_type")
+        try:
+            value = float(action.get("value", 0))
+        except:
+            value = 0.0
+        if action_type == "offsite_conversion":
+            conversions += value
+        if action_type in ["page_engagement", "post_engagement", "post_reaction"]:
+            engajamento += value
+
+    # --- Requisição para Campanhas Ativas ---
     filtering = json.dumps([{
         "field": "effective_status",
         "operator": "IN",
         "value": ["ACTIVE"]
     }])
     
-    campaigns_url = f"https://graph.facebook.com/v16.0/act_{ACCOUNT_ID}/campaigns"
+    campaigns_url = f"https://graph.facebook.com/v16.0/act_{account_id}/campaigns"
     params_campaigns = {
         "fields": "id,name,status",
         "filtering": filtering,
-        "access_token": ACCESS_TOKEN
+        "access_token": access_token
     }
     
     response_campaigns = requests.get(campaigns_url, params=params_campaigns)
@@ -51,14 +96,13 @@ def get_metrics():
     campaigns_data = response_campaigns.json()
     total_active_campaigns = len(campaigns_data.get("data", []))
     
-    # Usaremos a CTR como métrica interessante (ao invés de ROI)
-    interesting_metric = None
-    if "data" in insights_data and len(insights_data["data"]) > 0:
-        interesting_metric = insights_data["data"][0].get("ctr", None)
-    
     return {
-        "insights": insights_data,
-        "active_campaigns": campaigns_data,
-        "total_active_campaigns": total_active_campaigns,
-        "ctr": interesting_metric
+        "active_campaigns": total_active_campaigns,
+        "total_impressions": impressions,
+        "total_clicks": clicks,
+        "ctr": ctr,
+        "cpc": cpc,
+        "conversions": conversions,
+        "spent": spent,
+        "engajamento": engajamento
     }
