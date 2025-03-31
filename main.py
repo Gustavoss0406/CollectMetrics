@@ -122,7 +122,7 @@ async def fetch_metrics(account_id: str, access_token: str):
 
 @app.post("/metrics")
 async def get_metrics(payload: dict = Body(...)):
-    # Logs detalhados para verificar o body recebido
+    # Logs adicionais para verificar o body recebido
     logging.debug("==== Início da requisição para /metrics ====")
     logging.debug(f"Tipo do payload recebido: {type(payload)}")
     try:
