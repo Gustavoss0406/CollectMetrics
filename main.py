@@ -122,17 +122,24 @@ async def fetch_metrics(account_id: str, access_token: str):
 
 @app.post("/metrics")
 async def get_metrics(payload: dict = Body(...)):
-    # Adiciona um log mostrando o body recebido
-    logging.debug(f"Body recebido no endpoint /metrics: {payload}")
+    # Logs detalhados para verificar o body recebido
+    logging.debug("==== Início da requisição para /metrics ====")
+    logging.debug(f"Tipo do payload recebido: {type(payload)}")
+    try:
+        payload_str = json.dumps(payload, indent=2, ensure_ascii=False)
+    except Exception as e:
+        payload_str = str(payload)
+    logging.debug(f"Payload completo: {payload_str}")
     
     account_id = payload.get("account_id")
     access_token = payload.get("access_token")
     if not account_id or not access_token:
+        logging.error("Payload inválido: 'account_id' ou 'access_token' ausentes.")
         raise HTTPException(status_code=400, detail="É necessário fornecer 'account_id' e 'access_token' no body.")
     try:
         result = await fetch_metrics(account_id, access_token)
     except Exception as e:
-        logging.error(f"Erro no endpoint /metrics: {e}")
+        logging.error(f"Erro no endpoint /metrics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     return result
 
