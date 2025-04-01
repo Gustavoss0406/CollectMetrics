@@ -32,10 +32,10 @@ async def fetch_metrics(account_id: str, access_token: str):
     start_time = time.perf_counter()
     logging.debug(f"Iniciando fetch_metrics para account_id: {account_id}")
     
-    # Timeout total de 3 segundos para as requisições
+    # Configura um timeout total de 3 segundos para evitar esperas longas
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # URL e parâmetros para Insights da conta
+        # URL e parâmetros para Insights (métricas globais)
         insights_url = f"https://graph.facebook.com/v16.0/act_{account_id}/insights"
         params_insights = {
             "fields": "impressions,clicks,ctr,spend,cpc,actions",
@@ -56,7 +56,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             "access_token": access_token
         }
         
-        # Função auxiliar para requisições GET
+        # Função auxiliar para realizar requisições GET e tratar erros
         async def fetch(url, params):
             req_start = time.perf_counter()
             logging.debug(f"Iniciando requisição GET para {url} com params: {params}")
@@ -68,7 +68,6 @@ async def fetch_metrics(account_id: str, access_token: str):
                     raise Exception(f"Erro {resp.status}: {text}")
                 return await resp.json()
         
-        # Executa as requisições de insights e campanhas de forma paralela
         try:
             insights_data, campaigns_data = await asyncio.gather(
                 fetch(insights_url, params_insights),
@@ -78,11 +77,11 @@ async def fetch_metrics(account_id: str, access_token: str):
             logging.error(f"Erro durante as requisições: {e}")
             raise HTTPException(status_code=502, detail=f"Erro de conexão: {str(e)}")
         
-        # Processa os dados gerais de insights da conta
         if "data" not in insights_data or not insights_data["data"]:
             raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
         insights_item = insights_data["data"][0]
         
+        # Processamento das métricas globais (como no código original)
         try:
             impressions = float(insights_item.get("impressions", 0))
         except:
@@ -91,9 +90,8 @@ async def fetch_metrics(account_id: str, access_token: str):
             clicks = float(insights_item.get("clicks", 0))
         except:
             clicks = 0.0
-        # Calcula o CTR baseado em impressões e cliques (caso o dado não venha formatado)
-        ctr_value = (clicks / impressions * 100) if impressions > 0 else 0.0
-        ctr_formatted = format_percentage(ctr_value)
+        # Mantém o valor do ctr conforme retornado pela API
+        ctr = insights_item.get("ctr", None)
         try:
             cpc = float(insights_item.get("cpc", 0))
         except:
@@ -103,8 +101,9 @@ async def fetch_metrics(account_id: str, access_token: str):
         except:
             spent = 0.0
         
-        # Soma conversões (baseado em "offsite_conversion")
+        # Soma de conversões e engajamento
         conversions = 0.0
+        engagement = 0.0
         for action in insights_item.get("actions", []):
             try:
                 value = float(action.get("value", 0))
@@ -112,10 +111,12 @@ async def fetch_metrics(account_id: str, access_token: str):
                 value = 0.0
             if action.get("action_type") == "offsite_conversion":
                 conversions += value
+            if action.get("action_type") in ["page_engagement", "post_engagement", "post_reaction"]:
+                engagement += value
         
         total_active_campaigns = len(campaigns_data.get("data", []))
         
-        # Função auxiliar para buscar insights de cada campanha individualmente
+        # Função auxiliar para buscar insights individuais para cada campanha
         async def get_campaign_insights(camp):
             campaign_id = camp.get("id", "")
             campaign_obj = {
@@ -136,41 +137,46 @@ async def fetch_metrics(account_id: str, access_token: str):
                 campaign_insights = await fetch(campaign_insights_url, params_campaign_insights)
                 if "data" in campaign_insights and campaign_insights["data"]:
                     item = campaign_insights["data"][0]
-                    impressions_camp = float(item.get("impressions", 0))
-                    clicks_camp = float(item.get("clicks", 0))
-                    ctr_val = (clicks_camp / impressions_camp * 100) if impressions_camp > 0 else 0.0
-                    campaign_obj["impressions"] = int(impressions_camp)
-                    campaign_obj["clicks"] = int(clicks_camp)
-                    campaign_obj["ctr"] = format_percentage(ctr_val)
-                    cpc_val = float(item.get("cpc", 0))
-                    campaign_obj["cpc"] = format_currency(cpc_val)
+                    try:
+                        camp_impressions = float(item.get("impressions", 0))
+                    except:
+                        camp_impressions = 0.0
+                    try:
+                        camp_clicks = float(item.get("clicks", 0))
+                    except:
+                        camp_clicks = 0.0
+                    # Calcula e formata o CTR da campanha
+                    ctr_value = (camp_clicks / camp_impressions * 100) if camp_impressions > 0 else 0.0
+                    campaign_obj["impressions"] = int(camp_impressions)
+                    campaign_obj["clicks"] = int(camp_clicks)
+                    campaign_obj["ctr"] = format_percentage(ctr_value)
+                    try:
+                        camp_cpc = float(item.get("cpc", 0))
+                    except:
+                        camp_cpc = 0.0
+                    campaign_obj["cpc"] = format_currency(camp_cpc)
             except Exception as e:
                 logging.error(f"Erro ao buscar insights para campanha {campaign_id}: {e}")
             return campaign_obj
         
-        # Busca insights individuais para cada campanha de forma concorrente
+        # Busca os insights individuais das campanhas de forma concorrente
         campaigns_list = campaigns_data.get("data", [])
         tasks = [get_campaign_insights(camp) for camp in campaigns_list]
-        recent_campaignsGA = await asyncio.gather(*tasks)
+        recent_campaignsMA = await asyncio.gather(*tasks)
+        recent_campaigns_total = len(recent_campaignsMA)
         
-        recent_campaigns_total = len(recent_campaignsGA)
-        logging.debug(f"Total de campanhas recentes processadas: {recent_campaigns_total}")
-        logging.debug(f"Conteúdo de recent_campaignsGA: {recent_campaignsGA}")
-        
-        # Como não há dado de ROI no Facebook, definimos como "0.00%"
-        roi_formatted = "0.00%"
-        
+        # Monta o resultado final mantendo as métricas globais e os dados de campanhas
         result = {
             "active_campaigns": total_active_campaigns,
-            "impressions": int(impressions),
-            "clicks": int(clicks),
-            "ctr": ctr_formatted,
+            "total_impressions": impressions,
+            "total_clicks": clicks,
+            "ctr": ctr,
+            "cpc": cpc,
             "conversions": conversions,
-            "average_cpc": format_currency(cpc),
-            "roi": roi_formatted,
-            "total_spent": format_currency(spent),
+            "spent": spent,
+            "engajamento": engagement,
             "recent_campaigns_total": recent_campaigns_total,
-            "recent_campaignsGA": recent_campaignsGA
+            "recent_campaignsMA": recent_campaignsMA
         }
         end_time = time.perf_counter()
         logging.debug(f"fetch_metrics concluído em {end_time - start_time:.3f} segundos para account_id: {account_id}")
@@ -190,14 +196,11 @@ async def get_metrics(payload: dict = Body(...)):
     if not account_id or not access_token:
         logging.error("Payload inválido: 'account_id' ou 'access_token' ausentes.")
         raise HTTPException(status_code=400, detail="É necessário fornecer 'account_id' e 'access_token' no body.")
-    
     try:
         result = await fetch_metrics(account_id, access_token)
     except Exception as e:
         logging.error(f"Erro no endpoint /metrics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-    
-    # Retorna a resposta em JSON formatada conforme o modelo do Google Ads
     return result
 
 if __name__ == "__main__":
