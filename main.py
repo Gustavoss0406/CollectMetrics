@@ -27,7 +27,7 @@ async def fetch_metrics(account_id: str, access_token: str):
     # Configura um timeout total de 3 segundos para evitar esperas longas
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # URL e parâmetros para Insights
+        # URL e parâmetros para Insights da conta
         insights_url = f"https://graph.facebook.com/v16.0/act_{account_id}/insights"
         params_insights = {
             "fields": "impressions,clicks,ctr,spend,cpc,actions",
@@ -60,6 +60,7 @@ async def fetch_metrics(account_id: str, access_token: str):
                     raise Exception(f"Erro {resp.status}: {text}")
                 return await resp.json()
         
+        # Busca os dados de insights da conta e das campanhas em paralelo
         try:
             insights_data, campaigns_data = await asyncio.gather(
                 fetch(insights_url, params_insights),
@@ -69,6 +70,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             logging.error(f"Erro durante as requisições: {e}")
             raise HTTPException(status_code=502, detail=f"Erro de conexão: {str(e)}")
         
+        # Processamento dos dados de insights da conta
         if "data" not in insights_data or not insights_data["data"]:
             raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
         insights_item = insights_data["data"][0]
@@ -106,19 +108,39 @@ async def fetch_metrics(account_id: str, access_token: str):
         
         total_active_campaigns = len(campaigns_data.get("data", []))
         
-        # Transformação dos dados de campanhas para o formato desejado
-        recent_campaignsMA = []
-        for camp in campaigns_data.get("data", []):
+        # Função auxiliar para buscar insights de uma campanha específica
+        async def get_campaign_insights(camp):
+            campaign_id = camp.get("id", "")
             campaign_obj = {
-                "id": camp.get("id", ""),
+                "id": campaign_id,
                 "nome_da_campanha": camp.get("name", ""),
-                # Valores padrão: você pode atualizar esses valores se tiver dados reais
                 "cpc": "0.00",
                 "impressions": 0,
                 "clicks": 0,
                 "ctr": "0.00%"
             }
-            recent_campaignsMA.append(campaign_obj)
+            campaign_insights_url = f"https://graph.facebook.com/v16.0/{campaign_id}/insights"
+            params_campaign_insights = {
+                "fields": "impressions,clicks,ctr,cpc",
+                "date_preset": "maximum",
+                "access_token": access_token
+            }
+            try:
+                campaign_insights = await fetch(campaign_insights_url, params_campaign_insights)
+                if "data" in campaign_insights and campaign_insights["data"]:
+                    insights_item = campaign_insights["data"][0]
+                    campaign_obj["impressions"] = float(insights_item.get("impressions", 0))
+                    campaign_obj["clicks"] = float(insights_item.get("clicks", 0))
+                    campaign_obj["ctr"] = insights_item.get("ctr", "0.00%")
+                    campaign_obj["cpc"] = insights_item.get("cpc", "0.00")
+            except Exception as e:
+                logging.error(f"Erro ao buscar insights para campanha {campaign_id}: {e}")
+            return campaign_obj
+        
+        # Cria tasks para buscar insights de cada campanha de forma concorrente
+        campaigns_list = campaigns_data.get("data", [])
+        tasks = [get_campaign_insights(camp) for camp in campaigns_list]
+        recent_campaignsMA = await asyncio.gather(*tasks)
         
         recent_campaigns_total = len(recent_campaignsMA)
         logging.debug(f"Total de campanhas recentes processadas: {recent_campaigns_total}")
