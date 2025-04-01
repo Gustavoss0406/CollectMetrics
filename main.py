@@ -119,7 +119,10 @@ async def fetch_metrics(account_id: str, access_token: str):
                 "ctr": "0.00%"
             }
             recent_campaignsMA.append(campaign_obj)
+        
         recent_campaigns_total = len(recent_campaignsMA)
+        logging.debug(f"Total de campanhas recentes processadas: {recent_campaigns_total}")
+        logging.debug(f"Conteúdo de recent_campaignsMA: {recent_campaignsMA}")
         
         result = {
             "active_campaigns": total_active_campaigns,
