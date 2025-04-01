@@ -106,6 +106,21 @@ async def fetch_metrics(account_id: str, access_token: str):
         
         total_active_campaigns = len(campaigns_data.get("data", []))
         
+        # Transformação dos dados de campanhas para o formato desejado
+        recent_campaignsMA = []
+        for camp in campaigns_data.get("data", []):
+            campaign_obj = {
+                "id": camp.get("id", ""),
+                "nome_da_campanha": camp.get("name", ""),
+                # Valores padrão: você pode atualizar esses valores se tiver dados reais
+                "cpc": "0.00",
+                "impressions": 0,
+                "clicks": 0,
+                "ctr": "0.00%"
+            }
+            recent_campaignsMA.append(campaign_obj)
+        recent_campaigns_total = len(recent_campaignsMA)
+        
         result = {
             "active_campaigns": total_active_campaigns,
             "total_impressions": impressions,
@@ -114,7 +129,9 @@ async def fetch_metrics(account_id: str, access_token: str):
             "cpc": cpc,
             "conversions": conversions,
             "spent": spent,
-            "engajamento": engagement
+            "engajamento": engagement,
+            "recent_campaigns_total": recent_campaigns_total,
+            "recent_campaignsMA": recent_campaignsMA
         }
         end_time = time.perf_counter()
         logging.debug(f"fetch_metrics concluído em {end_time - start_time:.3f} segundos para account_id: {account_id}")
