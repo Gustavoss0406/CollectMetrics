@@ -32,10 +32,10 @@ async def fetch_metrics(account_id: str, access_token: str):
     start_time = time.perf_counter()
     logging.debug(f"Iniciando fetch_metrics para account_id: {account_id}")
     
-    # Configura um timeout total de 3 segundos para evitar esperas longas
+    # Timeout total de 3 segundos para evitar esperas longas
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # URL e parâmetros para Insights (métricas globais)
+        # URL e parâmetros para os insights globais da conta
         insights_url = f"https://graph.facebook.com/v16.0/act_{account_id}/insights"
         params_insights = {
             "fields": "impressions,clicks,ctr,spend,cpc,actions",
@@ -43,7 +43,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             "access_token": access_token
         }
         
-        # URL e parâmetros para Campanhas Ativas
+        # URL e parâmetros para buscar campanhas ativas
         campaigns_url = f"https://graph.facebook.com/v16.0/act_{account_id}/campaigns"
         filtering = json.dumps([{
             "field": "effective_status",
@@ -56,7 +56,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             "access_token": access_token
         }
         
-        # Função auxiliar para realizar requisições GET e tratar erros
+        # Função auxiliar para realizar requisições GET
         async def fetch(url, params):
             req_start = time.perf_counter()
             logging.debug(f"Iniciando requisição GET para {url} com params: {params}")
@@ -68,6 +68,7 @@ async def fetch_metrics(account_id: str, access_token: str):
                     raise Exception(f"Erro {resp.status}: {text}")
                 return await resp.json()
         
+        # Busca os dados de insights globais e as campanhas de forma paralela
         try:
             insights_data, campaigns_data = await asyncio.gather(
                 fetch(insights_url, params_insights),
@@ -81,7 +82,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
         insights_item = insights_data["data"][0]
         
-        # Processamento das métricas globais (como no código original)
+        # Processamento das métricas globais
         try:
             impressions = float(insights_item.get("impressions", 0))
         except:
@@ -90,7 +91,6 @@ async def fetch_metrics(account_id: str, access_token: str):
             clicks = float(insights_item.get("clicks", 0))
         except:
             clicks = 0.0
-        # Mantém o valor do ctr conforme retornado pela API
         ctr = insights_item.get("ctr", None)
         try:
             cpc = float(insights_item.get("cpc", 0))
@@ -119,6 +119,7 @@ async def fetch_metrics(account_id: str, access_token: str):
         # Função auxiliar para buscar insights individuais para cada campanha
         async def get_campaign_insights(camp):
             campaign_id = camp.get("id", "")
+            # Inicializa com valores padrão (como no código original)
             campaign_obj = {
                 "id": campaign_id,
                 "nome_da_campanha": camp.get("name", ""),
@@ -159,13 +160,16 @@ async def fetch_metrics(account_id: str, access_token: str):
                 logging.error(f"Erro ao buscar insights para campanha {campaign_id}: {e}")
             return campaign_obj
         
-        # Busca os insights individuais das campanhas de forma concorrente
+        # Obtenção da lista de campanhas com insights individuais
         campaigns_list = campaigns_data.get("data", [])
-        tasks = [get_campaign_insights(camp) for camp in campaigns_list]
-        recent_campaignsMA = await asyncio.gather(*tasks)
+        if campaigns_list:
+            tasks = [get_campaign_insights(camp) for camp in campaigns_list]
+            recent_campaignsMA = await asyncio.gather(*tasks)
+        else:
+            recent_campaignsMA = []
         recent_campaigns_total = len(recent_campaignsMA)
         
-        # Monta o resultado final mantendo as métricas globais e os dados de campanhas
+        # Monta o resultado final, mantendo as métricas globais e a lista de campanhas
         result = {
             "active_campaigns": total_active_campaigns,
             "total_impressions": impressions,
