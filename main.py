@@ -74,7 +74,7 @@ async def fetch_metrics(account_id: str, access_token: str):
                 "cpc": "0.00",
                 "impressions": 0,
                 "clicks": 0,
-                "ctr": "0.00%"  # Para campanhas individuais, manter formatação com "%"
+                "ctr": "0.00%"  # Para campanhas individuais, mantém formatação com "%"
             }
             campaign_insights_url = f"https://graph.facebook.com/v16.0/{campaign_id}/insights"
             params_campaign_insights = {
@@ -168,9 +168,15 @@ async def fetch_metrics(account_id: str, access_token: str):
         total_conversions = sum(metrics["conversions"] for _, metrics in campaign_results)
         total_engagement = sum(metrics["engagement"] for _, metrics in campaign_results)
         
-        # Calcula os valores globais (sem formatação com símbolo de porcentagem, conforme o retorno original)
+        # Calcula os valores globais
         global_ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0.0
         global_cpc = (total_spend / total_clicks) if total_clicks > 0 else 0.0
+
+        # Formata o CTR global como porcentagem com no máximo 3 caracteres
+        global_ctr_int = int(round(global_ctr))
+        if global_ctr_int > 99:
+            global_ctr_int = 99
+        global_ctr_str = f"{global_ctr_int}%"
         
         total_active_campaigns = len(campaign_results)
         recent_campaigns_total = total_active_campaigns
@@ -180,8 +186,8 @@ async def fetch_metrics(account_id: str, access_token: str):
             "active_campaigns": total_active_campaigns,
             "total_impressions": total_impressions,
             "total_clicks": total_clicks,
-            "ctr": f"{global_ctr:.6f}",   # Retorna CTR como string numérica (sem "%")
-            "cpc": global_cpc,           # Retorna CPC como float
+            "ctr": global_ctr_str,  # Global CTR formatado com até 3 caracteres
+            "cpc": global_cpc,
             "conversions": total_conversions,
             "spent": total_spend,
             "engajamento": total_engagement,
@@ -215,5 +221,4 @@ async def get_metrics(payload: dict = Body(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    # Tente usar a mesma porta que sua aplicação FlutterFlow espera (por exemplo, 8000)
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
