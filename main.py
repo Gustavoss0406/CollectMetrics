@@ -31,11 +31,11 @@ def format_currency(value: float) -> str:
 async def fetch_metrics(account_id: str, access_token: str):
     start_time = time.perf_counter()
     logging.debug(f"Iniciando fetch_metrics para account_id: {account_id}")
-
+    
     # Timeout total de 3 segundos para evitar esperas longas
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # URL e parâmetros para buscar campanhas ativas
+        # URL e parâmetros para buscar apenas campanhas ativas
         campaigns_url = f"https://graph.facebook.com/v16.0/act_{account_id}/campaigns"
         filtering = json.dumps([{
             "field": "effective_status",
@@ -47,8 +47,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             "filtering": filtering,
             "access_token": access_token
         }
-
-        # Função auxiliar para realizar requisições GET
+        
         async def fetch(url, params):
             req_start = time.perf_counter()
             logging.debug(f"Iniciando requisição GET para {url} com params: {params}")
@@ -59,34 +58,31 @@ async def fetch_metrics(account_id: str, access_token: str):
                     text = await resp.text()
                     raise Exception(f"Erro {resp.status}: {text}")
                 return await resp.json()
-
+        
         # Busca as campanhas ativas
         try:
             campaigns_data = await fetch(campaigns_url, params_campaigns)
         except Exception as e:
-            logging.error(f"Erro durante requisição de campanhas: {e}")
+            logging.error(f"Erro durante a requisição das campanhas: {e}")
             raise HTTPException(status_code=502, detail=f"Erro de conexão: {str(e)}")
-
+        
         campaigns_list = campaigns_data.get("data", [])
-        if not campaigns_list:
-            raise HTTPException(status_code=404, detail="Nenhuma campanha ativa encontrada.")
-
+        total_active_campaigns = len(campaigns_list)
+        
         # Função auxiliar para buscar insights individuais para cada campanha
         async def get_campaign_insights(camp):
             campaign_id = camp.get("id", "")
-            # Inicializa o objeto da campanha com valores padrão
+            # Inicializa com valores padrão (mantendo a estrutura original)
             campaign_obj = {
                 "id": campaign_id,
                 "nome_da_campanha": camp.get("name", ""),
+                "cpc": "0.00",
                 "impressions": 0,
                 "clicks": 0,
-                "spent": 0.0,
-                "conversions": 0.0,
-                "engajamento": 0.0,
-                "cpc": "0.00",
                 "ctr": "0.00%"
             }
             campaign_insights_url = f"https://graph.facebook.com/v16.0/{campaign_id}/insights"
+            # Inclui os campos spend e actions para agregação dos dados globais
             params_campaign_insights = {
                 "fields": "impressions,clicks,ctr,cpc,spend,actions",
                 "date_preset": "maximum",
@@ -97,66 +93,78 @@ async def fetch_metrics(account_id: str, access_token: str):
                 if "data" in campaign_insights and campaign_insights["data"]:
                     item = campaign_insights["data"][0]
                     try:
-                        impressions = float(item.get("impressions", 0))
+                        camp_impressions = float(item.get("impressions", 0))
                     except:
-                        impressions = 0.0
+                        camp_impressions = 0.0
                     try:
-                        clicks = float(item.get("clicks", 0))
+                        camp_clicks = float(item.get("clicks", 0))
                     except:
-                        clicks = 0.0
+                        camp_clicks = 0.0
+                    ctr_value = (camp_clicks / camp_impressions * 100) if camp_impressions > 0 else 0.0
+                    campaign_obj["impressions"] = int(camp_impressions)
+                    campaign_obj["clicks"] = int(camp_clicks)
+                    campaign_obj["ctr"] = format_percentage(ctr_value)
                     try:
-                        spend = float(item.get("spend", 0))
+                        camp_cpc = float(item.get("cpc", 0))
                     except:
-                        spend = 0.0
-                    # Calcula conversões e engajamento a partir das ações
-                    conversions = 0.0
-                    engajamento = 0.0
+                        camp_cpc = 0.0
+                    campaign_obj["cpc"] = format_currency(camp_cpc)
+                    
+                    # Extração dos valores de spend e ações para agregação
+                    try:
+                        camp_spend = float(item.get("spend", 0))
+                    except:
+                        camp_spend = 0.0
+                    camp_conversions = 0.0
+                    camp_engagement = 0.0
                     for action in item.get("actions", []):
                         try:
                             value = float(action.get("value", 0))
                         except:
                             value = 0.0
                         if action.get("action_type") == "offsite_conversion":
-                            conversions += value
+                            camp_conversions += value
                         if action.get("action_type") in ["page_engagement", "post_engagement", "post_reaction"]:
-                            engajamento += value
-                    campaign_obj["impressions"] = int(impressions)
-                    campaign_obj["clicks"] = int(clicks)
-                    ctr_value = (clicks / impressions * 100) if impressions > 0 else 0.0
-                    campaign_obj["ctr"] = format_percentage(ctr_value)
-                    campaign_obj["cpc"] = format_currency(spend / clicks if clicks > 0 else 0.0)
-                    campaign_obj["spent"] = spend
-                    campaign_obj["conversions"] = conversions
-                    campaign_obj["engajamento"] = engajamento
+                            camp_engagement += value
+                    # Armazena valores auxiliares para a agregação global
+                    campaign_obj["_spend"] = camp_spend
+                    campaign_obj["_conversions"] = camp_conversions
+                    campaign_obj["_engagement"] = camp_engagement
             except Exception as e:
                 logging.error(f"Erro ao buscar insights para campanha {campaign_id}: {e}")
             return campaign_obj
-
-        # Busca os insights individuais das campanhas ativas em paralelo
+        
+        # Obtenção da lista de campanhas ativas com insights individuais
         tasks = [get_campaign_insights(camp) for camp in campaigns_list]
-        active_campaigns_insights = await asyncio.gather(*tasks)
-
-        # Agrega as métricas globais apenas das campanhas ativas
-        total_impressions = sum(camp["impressions"] for camp in active_campaigns_insights)
-        total_clicks = sum(camp["clicks"] for camp in active_campaigns_insights)
-        total_spent = sum(camp["spent"] for camp in active_campaigns_insights)
-        total_conversions = sum(camp["conversions"] for camp in active_campaigns_insights)
-        total_engajamento = sum(camp["engajamento"] for camp in active_campaigns_insights)
-        global_ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0.0
-        global_cpc = (total_spent / total_clicks) if total_clicks > 0 else 0.0
-
-        # Monta o resultado final
+        recent_campaignsMA = await asyncio.gather(*tasks)
+        recent_campaigns_total = len(recent_campaignsMA)
+        
+        # Agregação dos dados globais a partir das campanhas ativas
+        total_impressions = sum(camp.get("impressions", 0) for camp in recent_campaignsMA)
+        total_clicks = sum(camp.get("clicks", 0) for camp in recent_campaignsMA)
+        global_ctr_value = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0.0
+        total_spent = sum(camp.get("_spend", 0) for camp in recent_campaignsMA)
+        aggregated_cpc = (total_spent / total_clicks) if total_clicks > 0 else 0.0
+        total_conversions = sum(camp.get("_conversions", 0) for camp in recent_campaignsMA)
+        total_engagement = sum(camp.get("_engagement", 0) for camp in recent_campaignsMA)
+        
+        # Remove os campos auxiliares para manter a estrutura original nas campanhas
+        for camp in recent_campaignsMA:
+            camp.pop("_spend", None)
+            camp.pop("_conversions", None)
+            camp.pop("_engagement", None)
+        
         result = {
-            "active_campaigns": len(campaigns_list),
+            "active_campaigns": total_active_campaigns,
             "total_impressions": total_impressions,
             "total_clicks": total_clicks,
-            "ctr": format_percentage(global_ctr),
-            "cpc": format_currency(global_cpc),
+            "ctr": format_percentage(global_ctr_value),
+            "cpc": format_currency(aggregated_cpc),
             "conversions": total_conversions,
             "spent": total_spent,
-            "engajamento": total_engajamento,
-            "recent_campaigns_total": len(active_campaigns_insights),
-            "recent_campaignsMA": active_campaigns_insights
+            "engajamento": total_engagement,
+            "recent_campaigns_total": recent_campaigns_total,
+            "recent_campaignsMA": recent_campaignsMA
         }
         end_time = time.perf_counter()
         logging.debug(f"fetch_metrics concluído em {end_time - start_time:.3f} segundos para account_id: {account_id}")
