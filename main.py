@@ -95,11 +95,13 @@ async def fetch_metrics(account_id: str, access_token: str):
                     item = campaign_insights["data"][0]
                     try:
                         camp_impressions = float(item.get("impressions", 0))
-                    except:
+                    except Exception as e:
+                        logging.error(f"Erro convertendo impressions para campanha {campaign_id}: {e}")
                         camp_impressions = 0.0
                     try:
                         camp_clicks = float(item.get("clicks", 0))
-                    except:
+                    except Exception as e:
+                        logging.error(f"Erro convertendo clicks para campanha {campaign_id}: {e}")
                         camp_clicks = 0.0
                     metrics["impressions"] = camp_impressions
                     metrics["clicks"] = camp_clicks
@@ -109,12 +111,14 @@ async def fetch_metrics(account_id: str, access_token: str):
                     campaign_obj["ctr"] = format_percentage(ctr_value)
                     try:
                         camp_cpc = float(item.get("cpc", 0))
-                    except:
+                    except Exception as e:
+                        logging.error(f"Erro convertendo cpc para campanha {campaign_id}: {e}")
                         camp_cpc = 0.0
                     campaign_obj["cpc"] = format_currency(camp_cpc)
                     try:
                         camp_spend = float(item.get("spend", 0))
-                    except:
+                    except Exception as e:
+                        logging.error(f"Erro convertendo spend para campanha {campaign_id}: {e}")
                         camp_spend = 0.0
                     metrics["spend"] = camp_spend
                     conversions = 0.0
@@ -122,7 +126,8 @@ async def fetch_metrics(account_id: str, access_token: str):
                     for action in item.get("actions", []):
                         try:
                             value = float(action.get("value", 0))
-                        except:
+                        except Exception as e:
+                            logging.error(f"Erro convertendo value em actions para campanha {campaign_id}: {e}")
                             value = 0.0
                         if action.get("action_type") == "offsite_conversion":
                             conversions += value
@@ -130,6 +135,9 @@ async def fetch_metrics(account_id: str, access_token: str):
                             engagement += value
                     metrics["conversions"] = conversions
                     metrics["engagement"] = engagement
+                    logging.debug(f"Campanha {campaign_id} - Métricas calculadas: {metrics}")
+                else:
+                    logging.debug(f"Sem dados de insights para a campanha {campaign_id}.")
             except Exception as e:
                 logging.error(f"Erro ao buscar insights para campanha {campaign_id}: {e}")
             return campaign_obj, metrics
