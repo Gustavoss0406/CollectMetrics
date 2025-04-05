@@ -68,7 +68,6 @@ async def fetch_metrics(account_id: str, access_token: str):
         # Retorna (campaign_obj, metrics) mantendo os mesmos campos originais.
         async def get_campaign_insights(camp):
             campaign_id = camp.get("id", "")
-            # Objeto que será retornado individualmente (estrutura inalterada)
             campaign_obj = {
                 "id": campaign_id,
                 "nome_da_campanha": camp.get("name", ""),
@@ -78,13 +77,11 @@ async def fetch_metrics(account_id: str, access_token: str):
                 "ctr": "0.00%"
             }
             campaign_insights_url = f"https://graph.facebook.com/v16.0/{campaign_id}/insights"
-            # Incluímos os campos spend e actions para cálculo global
             params_campaign_insights = {
                 "fields": "impressions,clicks,ctr,cpc,spend,actions",
                 "date_preset": "maximum",
                 "access_token": access_token
             }
-            # Dicionário para acumular métricas adicionais (para agregação global)
             metrics = {
                 "impressions": 0.0,
                 "clicks": 0.0,
@@ -106,7 +103,6 @@ async def fetch_metrics(account_id: str, access_token: str):
                         camp_clicks = 0.0
                     metrics["impressions"] = camp_impressions
                     metrics["clicks"] = camp_clicks
-                    # Calcula e formata o CTR da campanha
                     ctr_value = (camp_clicks / camp_impressions * 100) if camp_impressions > 0 else 0.0
                     campaign_obj["impressions"] = int(camp_impressions)
                     campaign_obj["clicks"] = int(camp_clicks)
@@ -121,7 +117,6 @@ async def fetch_metrics(account_id: str, access_token: str):
                     except:
                         camp_spend = 0.0
                     metrics["spend"] = camp_spend
-                    # Agrega conversões e engajamento da campanha
                     conversions = 0.0
                     engagement = 0.0
                     for action in item.get("actions", []):
@@ -139,7 +134,6 @@ async def fetch_metrics(account_id: str, access_token: str):
                 logging.error(f"Erro ao buscar insights para campanha {campaign_id}: {e}")
             return campaign_obj, metrics
         
-        # Busca a lista de campanhas ativas
         try:
             campaigns_data = await fetch(campaigns_url, params_campaigns)
         except Exception as e:
@@ -149,7 +143,6 @@ async def fetch_metrics(account_id: str, access_token: str):
         campaigns_list = campaigns_data.get("data", [])
         campaign_results = []
         if campaigns_list:
-            # Uso de return_exceptions=True para que uma falha em uma campanha não quebre o gather
             tasks = [get_campaign_insights(camp) for camp in campaigns_list]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for res in results:
@@ -160,7 +153,6 @@ async def fetch_metrics(account_id: str, access_token: str):
         else:
             campaign_results = []
         
-        # Agrega as métricas globais a partir dos insights das campanhas ativas
         total_impressions = sum(metrics["impressions"] for _, metrics in campaign_results)
         total_clicks = sum(metrics["clicks"] for _, metrics in campaign_results)
         total_spend = sum(metrics["spend"] for _, metrics in campaign_results)
@@ -173,7 +165,6 @@ async def fetch_metrics(account_id: str, access_token: str):
         recent_campaigns_total = total_active_campaigns
         recent_campaignsMA = [campaign_obj for campaign_obj, _ in campaign_results]
         
-        # Monta o resultado final com os mesmos campos originais
         result = {
             "active_campaigns": total_active_campaigns,
             "total_impressions": total_impressions,
