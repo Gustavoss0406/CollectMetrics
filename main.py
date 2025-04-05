@@ -178,6 +178,15 @@ async def fetch_metrics(account_id: str, access_token: str):
             global_ctr_int = 99
         global_ctr_str = f"{global_ctr_int}%"
         
+        # Formata o CPC global para no máximo 3 caracteres:
+        # Se for menor que 10, usa uma casa decimal; se for 10 ou maior, usa inteiro.
+        if global_cpc < 10:
+            cpc_str = f"{global_cpc:.1f}"
+        else:
+            cpc_str = f"{int(round(global_cpc))}"
+        # Caso o resultado exceda 3 caracteres, trunca (não recomendado, mas para garantir o máximo de 3 caracteres)
+        cpc_str = cpc_str[:3]
+        
         total_active_campaigns = len(campaign_results)
         recent_campaigns_total = total_active_campaigns
         recent_campaignsMA = [campaign_obj for campaign_obj, _ in campaign_results]
@@ -187,7 +196,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             "total_impressions": total_impressions,
             "total_clicks": total_clicks,
             "ctr": global_ctr_str,  # Global CTR formatado com até 3 caracteres
-            "cpc": global_cpc,
+            "cpc": cpc_str,         # CPC global formatado com até 3 caracteres
             "conversions": total_conversions,
             "spent": total_spend,
             "engajamento": total_engagement,
