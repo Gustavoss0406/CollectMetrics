@@ -31,18 +31,10 @@ def format_currency(value: float) -> str:
 async def fetch_metrics(account_id: str, access_token: str):
     start_time = time.perf_counter()
     logging.debug(f"Iniciando fetch_metrics para account_id: {account_id}")
-    
+
     # Timeout total de 3 segundos para evitar esperas longas
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # URL e parâmetros para os insights globais da conta
-        insights_url = f"https://graph.facebook.com/v16.0/act_{account_id}/insights"
-        params_insights = {
-            "fields": "impressions,clicks,ctr,spend,cpc,actions",
-            "date_preset": "maximum",
-            "access_token": access_token
-        }
-        
         # URL e parâmetros para buscar campanhas ativas
         campaigns_url = f"https://graph.facebook.com/v16.0/act_{account_id}/campaigns"
         filtering = json.dumps([{
@@ -55,7 +47,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             "filtering": filtering,
             "access_token": access_token
         }
-        
+
         # Função auxiliar para realizar requisições GET
         async def fetch(url, params):
             req_start = time.perf_counter()
@@ -67,70 +59,36 @@ async def fetch_metrics(account_id: str, access_token: str):
                     text = await resp.text()
                     raise Exception(f"Erro {resp.status}: {text}")
                 return await resp.json()
-        
-        # Busca os dados de insights globais e as campanhas de forma paralela
+
+        # Busca as campanhas ativas
         try:
-            insights_data, campaigns_data = await asyncio.gather(
-                fetch(insights_url, params_insights),
-                fetch(campaigns_url, params_campaigns)
-            )
+            campaigns_data = await fetch(campaigns_url, params_campaigns)
         except Exception as e:
-            logging.error(f"Erro durante as requisições: {e}")
+            logging.error(f"Erro durante requisição de campanhas: {e}")
             raise HTTPException(status_code=502, detail=f"Erro de conexão: {str(e)}")
-        
-        if "data" not in insights_data or not insights_data["data"]:
-            raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
-        insights_item = insights_data["data"][0]
-        
-        # Processamento das métricas globais
-        try:
-            impressions = float(insights_item.get("impressions", 0))
-        except:
-            impressions = 0.0
-        try:
-            clicks = float(insights_item.get("clicks", 0))
-        except:
-            clicks = 0.0
-        ctr = insights_item.get("ctr", None)
-        try:
-            cpc = float(insights_item.get("cpc", 0))
-        except:
-            cpc = 0.0
-        try:
-            spent = float(insights_item.get("spend", 0))
-        except:
-            spent = 0.0
-        
-        # Soma de conversões e engajamento
-        conversions = 0.0
-        engagement = 0.0
-        for action in insights_item.get("actions", []):
-            try:
-                value = float(action.get("value", 0))
-            except:
-                value = 0.0
-            if action.get("action_type") == "offsite_conversion":
-                conversions += value
-            if action.get("action_type") in ["page_engagement", "post_engagement", "post_reaction"]:
-                engagement += value
-        
-        total_active_campaigns = len(campaigns_data.get("data", []))
-        
+
+        campaigns_list = campaigns_data.get("data", [])
+        if not campaigns_list:
+            raise HTTPException(status_code=404, detail="Nenhuma campanha ativa encontrada.")
+
         # Função auxiliar para buscar insights individuais para cada campanha
         async def get_campaign_insights(camp):
             campaign_id = camp.get("id", "")
-            # Inicializa com valores padrão (como no código original)
+            # Inicializa o objeto da campanha com valores padrão
             campaign_obj = {
                 "id": campaign_id,
                 "nome_da_campanha": camp.get("name", ""),
-                "cpc": "0.00",
                 "impressions": 0,
                 "clicks": 0,
+                "spent": 0.0,
+                "conversions": 0.0,
+                "engajamento": 0.0,
+                "cpc": "0.00",
                 "ctr": "0.00%"
             }
             campaign_insights_url = f"https://graph.facebook.com/v16.0/{campaign_id}/insights"
             params_campaign_insights = {
-                "fields": "impressions,clicks,ctr,cpc",
+                "fields": "impressions,clicks,ctr,cpc,spend,actions",
                 "date_preset": "maximum",
                 "access_token": access_token
             }
@@ -139,48 +97,66 @@ async def fetch_metrics(account_id: str, access_token: str):
                 if "data" in campaign_insights and campaign_insights["data"]:
                     item = campaign_insights["data"][0]
                     try:
-                        camp_impressions = float(item.get("impressions", 0))
+                        impressions = float(item.get("impressions", 0))
                     except:
-                        camp_impressions = 0.0
+                        impressions = 0.0
                     try:
-                        camp_clicks = float(item.get("clicks", 0))
+                        clicks = float(item.get("clicks", 0))
                     except:
-                        camp_clicks = 0.0
-                    # Calcula e formata o CTR da campanha
-                    ctr_value = (camp_clicks / camp_impressions * 100) if camp_impressions > 0 else 0.0
-                    campaign_obj["impressions"] = int(camp_impressions)
-                    campaign_obj["clicks"] = int(camp_clicks)
+                        clicks = 0.0
+                    try:
+                        spend = float(item.get("spend", 0))
+                    except:
+                        spend = 0.0
+                    # Calcula conversões e engajamento a partir das ações
+                    conversions = 0.0
+                    engajamento = 0.0
+                    for action in item.get("actions", []):
+                        try:
+                            value = float(action.get("value", 0))
+                        except:
+                            value = 0.0
+                        if action.get("action_type") == "offsite_conversion":
+                            conversions += value
+                        if action.get("action_type") in ["page_engagement", "post_engagement", "post_reaction"]:
+                            engajamento += value
+                    campaign_obj["impressions"] = int(impressions)
+                    campaign_obj["clicks"] = int(clicks)
+                    ctr_value = (clicks / impressions * 100) if impressions > 0 else 0.0
                     campaign_obj["ctr"] = format_percentage(ctr_value)
-                    try:
-                        camp_cpc = float(item.get("cpc", 0))
-                    except:
-                        camp_cpc = 0.0
-                    campaign_obj["cpc"] = format_currency(camp_cpc)
+                    campaign_obj["cpc"] = format_currency(spend / clicks if clicks > 0 else 0.0)
+                    campaign_obj["spent"] = spend
+                    campaign_obj["conversions"] = conversions
+                    campaign_obj["engajamento"] = engajamento
             except Exception as e:
                 logging.error(f"Erro ao buscar insights para campanha {campaign_id}: {e}")
             return campaign_obj
-        
-        # Obtenção da lista de campanhas com insights individuais
-        campaigns_list = campaigns_data.get("data", [])
-        if campaigns_list:
-            tasks = [get_campaign_insights(camp) for camp in campaigns_list]
-            recent_campaignsMA = await asyncio.gather(*tasks)
-        else:
-            recent_campaignsMA = []
-        recent_campaigns_total = len(recent_campaignsMA)
-        
-        # Monta o resultado final, mantendo as métricas globais e a lista de campanhas
+
+        # Busca os insights individuais das campanhas ativas em paralelo
+        tasks = [get_campaign_insights(camp) for camp in campaigns_list]
+        active_campaigns_insights = await asyncio.gather(*tasks)
+
+        # Agrega as métricas globais apenas das campanhas ativas
+        total_impressions = sum(camp["impressions"] for camp in active_campaigns_insights)
+        total_clicks = sum(camp["clicks"] for camp in active_campaigns_insights)
+        total_spent = sum(camp["spent"] for camp in active_campaigns_insights)
+        total_conversions = sum(camp["conversions"] for camp in active_campaigns_insights)
+        total_engajamento = sum(camp["engajamento"] for camp in active_campaigns_insights)
+        global_ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0.0
+        global_cpc = (total_spent / total_clicks) if total_clicks > 0 else 0.0
+
+        # Monta o resultado final
         result = {
-            "active_campaigns": total_active_campaigns,
-            "total_impressions": impressions,
-            "total_clicks": clicks,
-            "ctr": ctr,
-            "cpc": cpc,
-            "conversions": conversions,
-            "spent": spent,
-            "engajamento": engagement,
-            "recent_campaigns_total": recent_campaigns_total,
-            "recent_campaignsMA": recent_campaignsMA
+            "active_campaigns": len(campaigns_list),
+            "total_impressions": total_impressions,
+            "total_clicks": total_clicks,
+            "ctr": format_percentage(global_ctr),
+            "cpc": format_currency(global_cpc),
+            "conversions": total_conversions,
+            "spent": total_spent,
+            "engajamento": total_engajamento,
+            "recent_campaigns_total": len(active_campaigns_insights),
+            "recent_campaignsMA": active_campaigns_insights
         }
         end_time = time.perf_counter()
         logging.debug(f"fetch_metrics concluído em {end_time - start_time:.3f} segundos para account_id: {account_id}")
