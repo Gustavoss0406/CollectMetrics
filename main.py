@@ -48,17 +48,21 @@ async def fetch_metrics(account_id: str, access_token: str):
             "access_token": access_token
         }
         
-        # Função auxiliar para realizar requisições GET
+        # Função auxiliar para realizar requisições GET com logs HTTP
         async def fetch(url, params):
             req_start = time.perf_counter()
-            logging.debug(f"Iniciando requisição GET para {url} com params: {params}")
+            logging.debug(f"HTTP REQUEST: GET {url} com params: {params}")
             async with session.get(url, params=params) as resp:
                 req_end = time.perf_counter()
-                logging.debug(f"Requisição para {url} completada em {req_end - req_start:.3f} segundos com status {resp.status}")
+                response_time = req_end - req_start
+                logging.debug(f"HTTP RESPONSE: {url} completado em {response_time:.3f} segundos com status {resp.status}")
                 if resp.status != 200:
-                    text = await resp.text()
-                    raise Exception(f"Erro {resp.status}: {text}")
-                return await resp.json()
+                    response_text = await resp.text()
+                    logging.error(f"HTTP ERROR: {url} retornou status {resp.status} com resposta: {response_text}")
+                    raise Exception(f"Erro {resp.status}: {response_text}")
+                response_json = await resp.json()
+                logging.debug(f"HTTP RESPONSE JSON: {url} retornou: {response_json}")
+                return response_json
         
         # Função auxiliar para buscar insights individuais para cada campanha ativa.
         # Retorna (campaign_obj, metrics) mantendo os mesmos campos originais.
