@@ -35,7 +35,7 @@ async def fetch_metrics(account_id: str, access_token: str):
     # Timeout total de 3 segundos para evitar esperas longas
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # URL e parâmetros para os insights globais da conta (não serão usados para os valores finais)
+        # URL e parâmetros para os insights globais da conta
         insights_url = f"https://graph.facebook.com/v16.0/act_{account_id}/insights"
         params_insights = {
             "fields": "impressions,clicks,ctr,spend,cpc,actions",
@@ -78,12 +78,11 @@ async def fetch_metrics(account_id: str, access_token: str):
             logging.error(f"Erro durante as requisições: {e}")
             raise HTTPException(status_code=502, detail=f"Erro de conexão: {str(e)}")
         
-        # Mesmo que os insights globais sejam obtidos, iremos sobrescrever os valores abaixo com os dados das campanhas ativas.
         if "data" not in insights_data or not insights_data["data"]:
             raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
         insights_item = insights_data["data"][0]
         
-        # Valores originais (serão substituídos)
+        # Processamento das métricas globais
         try:
             impressions = float(insights_item.get("impressions", 0))
         except:
@@ -102,6 +101,7 @@ async def fetch_metrics(account_id: str, access_token: str):
         except:
             spent = 0.0
         
+        # Soma de conversões e engajamento
         conversions = 0.0
         engagement = 0.0
         for action in insights_item.get("actions", []):
@@ -119,7 +119,7 @@ async def fetch_metrics(account_id: str, access_token: str):
         # Função auxiliar para buscar insights individuais para cada campanha
         async def get_campaign_insights(camp):
             campaign_id = camp.get("id", "")
-            # Inicializa com valores padrão (sem alterar a estrutura do objeto retornado)
+            # Inicializa com valores padrão (como no código original)
             campaign_obj = {
                 "id": campaign_id,
                 "nome_da_campanha": camp.get("name", ""),
@@ -129,9 +129,8 @@ async def fetch_metrics(account_id: str, access_token: str):
                 "ctr": "0.00%"
             }
             campaign_insights_url = f"https://graph.facebook.com/v16.0/{campaign_id}/insights"
-            # Adicionamos os campos spend e actions para agregarmos os valores globais
             params_campaign_insights = {
-                "fields": "impressions,clicks,ctr,cpc,spend,actions",
+                "fields": "impressions,clicks,ctr,cpc",
                 "date_preset": "maximum",
                 "access_token": access_token
             }
@@ -157,27 +156,6 @@ async def fetch_metrics(account_id: str, access_token: str):
                     except:
                         camp_cpc = 0.0
                     campaign_obj["cpc"] = format_currency(camp_cpc)
-                    
-                    # Coleta dados adicionais para agregação global
-                    try:
-                        camp_spend = float(item.get("spend", 0))
-                    except:
-                        camp_spend = 0.0
-                    camp_conversions = 0.0
-                    camp_engagement = 0.0
-                    for action in item.get("actions", []):
-                        try:
-                            value = float(action.get("value", 0))
-                        except:
-                            value = 0.0
-                        if action.get("action_type") == "offsite_conversion":
-                            camp_conversions += value
-                        if action.get("action_type") in ["page_engagement", "post_engagement", "post_reaction"]:
-                            camp_engagement += value
-                    # Armazena valores auxiliares (não fazem parte da resposta final da campanha)
-                    campaign_obj["_spend"] = camp_spend
-                    campaign_obj["_conversions"] = camp_conversions
-                    campaign_obj["_engagement"] = camp_engagement
             except Exception as e:
                 logging.error(f"Erro ao buscar insights para campanha {campaign_id}: {e}")
             return campaign_obj
@@ -191,30 +169,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             recent_campaignsMA = []
         recent_campaigns_total = len(recent_campaignsMA)
         
-        # Agregação dos dados globais com base apenas nos insights das campanhas ativas
-        aggregated_impressions = sum(camp.get("impressions", 0) for camp in recent_campaignsMA)
-        aggregated_clicks = sum(camp.get("clicks", 0) for camp in recent_campaignsMA)
-        global_ctr_value = (aggregated_clicks / aggregated_impressions * 100) if aggregated_impressions > 0 else 0.0
-        global_spent = sum(camp.get("_spend", 0) for camp in recent_campaignsMA)
-        aggregated_cpc = (global_spent / aggregated_clicks) if aggregated_clicks > 0 else 0.0
-        global_conversions = sum(camp.get("_conversions", 0) for camp in recent_campaignsMA)
-        global_engagement = sum(camp.get("_engagement", 0) for camp in recent_campaignsMA)
-        
-        # Sobrescreve os valores globais com os dados agregados das campanhas ativas
-        impressions = aggregated_impressions
-        clicks = aggregated_clicks
-        ctr = format_percentage(global_ctr_value)
-        cpc = format_currency(aggregated_cpc)
-        spent = global_spent
-        conversions = global_conversions
-        engagement = global_engagement
-        
-        # Remove os campos auxiliares antes de retornar a resposta
-        for camp in recent_campaignsMA:
-            camp.pop("_spend", None)
-            camp.pop("_conversions", None)
-            camp.pop("_engagement", None)
-        
+        # Monta o resultado final, mantendo as métricas globais e a lista de campanhas
         result = {
             "active_campaigns": total_active_campaigns,
             "total_impressions": impressions,
