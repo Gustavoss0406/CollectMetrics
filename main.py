@@ -21,11 +21,11 @@ app.add_middleware(
 )
 
 def format_percentage(value: float) -> str:
-    """Formata um valor float como percentual com duas casas decimais."""
+    """Formata um valor float como percentual com duas casas decimais (para campanhas individuais)."""
     return f"{value:.2f}%"
 
 def format_currency(value: float) -> str:
-    """Formata um valor float para string com duas casas decimais."""
+    """Formata um valor float para string com duas casas decimais (para campanhas individuais)."""
     return f"{value:.2f}"
 
 async def fetch_metrics(account_id: str, access_token: str):
@@ -74,7 +74,7 @@ async def fetch_metrics(account_id: str, access_token: str):
                 "cpc": "0.00",
                 "impressions": 0,
                 "clicks": 0,
-                "ctr": "0.00%"
+                "ctr": "0.00%"  # Para campanhas individuais, manter formatação com "%"
             }
             campaign_insights_url = f"https://graph.facebook.com/v16.0/{campaign_id}/insights"
             params_campaign_insights = {
@@ -161,14 +161,17 @@ async def fetch_metrics(account_id: str, access_token: str):
         else:
             campaign_results = []
         
+        # Agrega as métricas globais a partir dos insights das campanhas ativas
         total_impressions = sum(metrics["impressions"] for _, metrics in campaign_results)
         total_clicks = sum(metrics["clicks"] for _, metrics in campaign_results)
         total_spend = sum(metrics["spend"] for _, metrics in campaign_results)
         total_conversions = sum(metrics["conversions"] for _, metrics in campaign_results)
         total_engagement = sum(metrics["engagement"] for _, metrics in campaign_results)
         
+        # Calcula os valores globais (sem formatação com símbolo de porcentagem, conforme o retorno original)
         global_ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0.0
         global_cpc = (total_spend / total_clicks) if total_clicks > 0 else 0.0
+        
         total_active_campaigns = len(campaign_results)
         recent_campaigns_total = total_active_campaigns
         recent_campaignsMA = [campaign_obj for campaign_obj, _ in campaign_results]
@@ -177,8 +180,8 @@ async def fetch_metrics(account_id: str, access_token: str):
             "active_campaigns": total_active_campaigns,
             "total_impressions": total_impressions,
             "total_clicks": total_clicks,
-            "ctr": format_percentage(global_ctr),
-            "cpc": format_currency(global_cpc),
+            "ctr": f"{global_ctr:.6f}",   # Retorna CTR como string numérica (sem "%")
+            "cpc": global_cpc,           # Retorna CPC como float
             "conversions": total_conversions,
             "spent": total_spend,
             "engajamento": total_engagement,
@@ -212,4 +215,5 @@ async def get_metrics(payload: dict = Body(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+    # Tente usar a mesma porta que sua aplicação FlutterFlow espera (por exemplo, 8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
