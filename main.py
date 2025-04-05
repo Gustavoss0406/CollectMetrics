@@ -241,4 +241,4 @@ async def get_metrics(payload: dict = Body(...)):
 if __name__ == "__main__":
     import uvicorn
     # Utilize a porta esperada pela sua aplicação FlutterFlow; neste exemplo, 8000.
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
