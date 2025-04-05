@@ -35,7 +35,15 @@ async def fetch_metrics(account_id: str, access_token: str):
     # Timeout total de 3 segundos para evitar esperas longas
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # URL e parâmetros para buscar apenas campanhas ativas
+        # URL e parâmetros para os insights globais da conta (não serão usados para os valores finais)
+        insights_url = f"https://graph.facebook.com/v16.0/act_{account_id}/insights"
+        params_insights = {
+            "fields": "impressions,clicks,ctr,spend,cpc,actions",
+            "date_preset": "maximum",
+            "access_token": access_token
+        }
+        
+        # URL e parâmetros para buscar campanhas ativas
         campaigns_url = f"https://graph.facebook.com/v16.0/act_{account_id}/campaigns"
         filtering = json.dumps([{
             "field": "effective_status",
@@ -48,6 +56,7 @@ async def fetch_metrics(account_id: str, access_token: str):
             "access_token": access_token
         }
         
+        # Função auxiliar para realizar requisições GET
         async def fetch(url, params):
             req_start = time.perf_counter()
             logging.debug(f"Iniciando requisição GET para {url} com params: {params}")
@@ -59,20 +68,58 @@ async def fetch_metrics(account_id: str, access_token: str):
                     raise Exception(f"Erro {resp.status}: {text}")
                 return await resp.json()
         
-        # Busca as campanhas ativas
+        # Busca os dados de insights globais e as campanhas de forma paralela
         try:
-            campaigns_data = await fetch(campaigns_url, params_campaigns)
+            insights_data, campaigns_data = await asyncio.gather(
+                fetch(insights_url, params_insights),
+                fetch(campaigns_url, params_campaigns)
+            )
         except Exception as e:
-            logging.error(f"Erro durante a requisição das campanhas: {e}")
+            logging.error(f"Erro durante as requisições: {e}")
             raise HTTPException(status_code=502, detail=f"Erro de conexão: {str(e)}")
         
-        campaigns_list = campaigns_data.get("data", [])
-        total_active_campaigns = len(campaigns_list)
+        # Mesmo que os insights globais sejam obtidos, iremos sobrescrever os valores abaixo com os dados das campanhas ativas.
+        if "data" not in insights_data or not insights_data["data"]:
+            raise HTTPException(status_code=404, detail="Nenhum dado de insights encontrado.")
+        insights_item = insights_data["data"][0]
+        
+        # Valores originais (serão substituídos)
+        try:
+            impressions = float(insights_item.get("impressions", 0))
+        except:
+            impressions = 0.0
+        try:
+            clicks = float(insights_item.get("clicks", 0))
+        except:
+            clicks = 0.0
+        ctr = insights_item.get("ctr", None)
+        try:
+            cpc = float(insights_item.get("cpc", 0))
+        except:
+            cpc = 0.0
+        try:
+            spent = float(insights_item.get("spend", 0))
+        except:
+            spent = 0.0
+        
+        conversions = 0.0
+        engagement = 0.0
+        for action in insights_item.get("actions", []):
+            try:
+                value = float(action.get("value", 0))
+            except:
+                value = 0.0
+            if action.get("action_type") == "offsite_conversion":
+                conversions += value
+            if action.get("action_type") in ["page_engagement", "post_engagement", "post_reaction"]:
+                engagement += value
+        
+        total_active_campaigns = len(campaigns_data.get("data", []))
         
         # Função auxiliar para buscar insights individuais para cada campanha
         async def get_campaign_insights(camp):
             campaign_id = camp.get("id", "")
-            # Inicializa com valores padrão (mantendo a estrutura original)
+            # Inicializa com valores padrão (sem alterar a estrutura do objeto retornado)
             campaign_obj = {
                 "id": campaign_id,
                 "nome_da_campanha": camp.get("name", ""),
@@ -82,7 +129,7 @@ async def fetch_metrics(account_id: str, access_token: str):
                 "ctr": "0.00%"
             }
             campaign_insights_url = f"https://graph.facebook.com/v16.0/{campaign_id}/insights"
-            # Inclui os campos spend e actions para agregação dos dados globais
+            # Adicionamos os campos spend e actions para agregarmos os valores globais
             params_campaign_insights = {
                 "fields": "impressions,clicks,ctr,cpc,spend,actions",
                 "date_preset": "maximum",
@@ -100,6 +147,7 @@ async def fetch_metrics(account_id: str, access_token: str):
                         camp_clicks = float(item.get("clicks", 0))
                     except:
                         camp_clicks = 0.0
+                    # Calcula e formata o CTR da campanha
                     ctr_value = (camp_clicks / camp_impressions * 100) if camp_impressions > 0 else 0.0
                     campaign_obj["impressions"] = int(camp_impressions)
                     campaign_obj["clicks"] = int(camp_clicks)
@@ -110,7 +158,7 @@ async def fetch_metrics(account_id: str, access_token: str):
                         camp_cpc = 0.0
                     campaign_obj["cpc"] = format_currency(camp_cpc)
                     
-                    # Extração dos valores de spend e ações para agregação
+                    # Coleta dados adicionais para agregação global
                     try:
                         camp_spend = float(item.get("spend", 0))
                     except:
@@ -126,7 +174,7 @@ async def fetch_metrics(account_id: str, access_token: str):
                             camp_conversions += value
                         if action.get("action_type") in ["page_engagement", "post_engagement", "post_reaction"]:
                             camp_engagement += value
-                    # Armazena valores auxiliares para a agregação global
+                    # Armazena valores auxiliares (não fazem parte da resposta final da campanha)
                     campaign_obj["_spend"] = camp_spend
                     campaign_obj["_conversions"] = camp_conversions
                     campaign_obj["_engagement"] = camp_engagement
@@ -134,21 +182,34 @@ async def fetch_metrics(account_id: str, access_token: str):
                 logging.error(f"Erro ao buscar insights para campanha {campaign_id}: {e}")
             return campaign_obj
         
-        # Obtenção da lista de campanhas ativas com insights individuais
-        tasks = [get_campaign_insights(camp) for camp in campaigns_list]
-        recent_campaignsMA = await asyncio.gather(*tasks)
+        # Obtenção da lista de campanhas com insights individuais
+        campaigns_list = campaigns_data.get("data", [])
+        if campaigns_list:
+            tasks = [get_campaign_insights(camp) for camp in campaigns_list]
+            recent_campaignsMA = await asyncio.gather(*tasks)
+        else:
+            recent_campaignsMA = []
         recent_campaigns_total = len(recent_campaignsMA)
         
-        # Agregação dos dados globais a partir das campanhas ativas
-        total_impressions = sum(camp.get("impressions", 0) for camp in recent_campaignsMA)
-        total_clicks = sum(camp.get("clicks", 0) for camp in recent_campaignsMA)
-        global_ctr_value = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0.0
-        total_spent = sum(camp.get("_spend", 0) for camp in recent_campaignsMA)
-        aggregated_cpc = (total_spent / total_clicks) if total_clicks > 0 else 0.0
-        total_conversions = sum(camp.get("_conversions", 0) for camp in recent_campaignsMA)
-        total_engagement = sum(camp.get("_engagement", 0) for camp in recent_campaignsMA)
+        # Agregação dos dados globais com base apenas nos insights das campanhas ativas
+        aggregated_impressions = sum(camp.get("impressions", 0) for camp in recent_campaignsMA)
+        aggregated_clicks = sum(camp.get("clicks", 0) for camp in recent_campaignsMA)
+        global_ctr_value = (aggregated_clicks / aggregated_impressions * 100) if aggregated_impressions > 0 else 0.0
+        global_spent = sum(camp.get("_spend", 0) for camp in recent_campaignsMA)
+        aggregated_cpc = (global_spent / aggregated_clicks) if aggregated_clicks > 0 else 0.0
+        global_conversions = sum(camp.get("_conversions", 0) for camp in recent_campaignsMA)
+        global_engagement = sum(camp.get("_engagement", 0) for camp in recent_campaignsMA)
         
-        # Remove os campos auxiliares para manter a estrutura original nas campanhas
+        # Sobrescreve os valores globais com os dados agregados das campanhas ativas
+        impressions = aggregated_impressions
+        clicks = aggregated_clicks
+        ctr = format_percentage(global_ctr_value)
+        cpc = format_currency(aggregated_cpc)
+        spent = global_spent
+        conversions = global_conversions
+        engagement = global_engagement
+        
+        # Remove os campos auxiliares antes de retornar a resposta
         for camp in recent_campaignsMA:
             camp.pop("_spend", None)
             camp.pop("_conversions", None)
@@ -156,13 +217,13 @@ async def fetch_metrics(account_id: str, access_token: str):
         
         result = {
             "active_campaigns": total_active_campaigns,
-            "total_impressions": total_impressions,
-            "total_clicks": total_clicks,
-            "ctr": format_percentage(global_ctr_value),
-            "cpc": format_currency(aggregated_cpc),
-            "conversions": total_conversions,
-            "spent": total_spent,
-            "engajamento": total_engagement,
+            "total_impressions": impressions,
+            "total_clicks": clicks,
+            "ctr": ctr,
+            "cpc": cpc,
+            "conversions": conversions,
+            "spent": spent,
+            "engajamento": engagement,
             "recent_campaigns_total": recent_campaigns_total,
             "recent_campaignsMA": recent_campaignsMA
         }
