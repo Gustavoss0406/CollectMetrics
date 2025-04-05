@@ -21,12 +21,39 @@ app.add_middleware(
 )
 
 def format_percentage(value: float) -> str:
-    """Formata um valor float como percentual com duas casas decimais (para campanhas individuais)."""
+    """Formata o CTR individual com 2 casas decimais e adiciona '%' (mantém a formatação original para campanhas)."""
     return f"{value:.2f}%"
 
 def format_currency(value: float) -> str:
-    """Formata um valor float para string com duas casas decimais (para campanhas individuais)."""
+    """Formata o CPC individual com 2 casas decimais (mantém a formatação original para campanhas)."""
     return f"{value:.2f}"
+
+def format_cpc_truncate(value: float) -> str:
+    """
+    Formata o CPC global truncando para 1 dígito decimal sem arredondar.
+    Se o resultado tiver mais de 3 caracteres, utiliza somente a parte inteira.
+    """
+    # Trunca sem arredondar
+    truncated = int(value * 10) / 10
+    s = f"{truncated:.1f}"
+    if len(s) > 3:
+        s = str(int(truncated))
+        s = s[:3]
+    return s
+
+def format_ctr_truncate(value: float) -> str:
+    """
+    Formata o CTR global (em porcentagem) truncando para 1 dígito decimal sem arredondar.
+    Se o resultado (incluindo o '%') tiver mais de 3 caracteres, utiliza somente a parte inteira seguida de '%'.
+    """
+    # Trunca sem arredondar
+    truncated = int(value * 10) / 10
+    s = f"{truncated:.1f}%"
+    if len(s) > 3:
+        s = f"{int(truncated)}%"
+        if len(s) > 3:
+            s = s[:3]
+    return s
 
 async def fetch_metrics(account_id: str, access_token: str):
     start_time = time.perf_counter()
@@ -74,7 +101,7 @@ async def fetch_metrics(account_id: str, access_token: str):
                 "cpc": "0.00",
                 "impressions": 0,
                 "clicks": 0,
-                "ctr": "0.00%"  # Para campanhas individuais, mantém formatação com "%"
+                "ctr": "0.00%"  # Mantém a formatação original para campanhas individuais
             }
             campaign_insights_url = f"https://graph.facebook.com/v16.0/{campaign_id}/insights"
             params_campaign_insights = {
@@ -169,23 +196,8 @@ async def fetch_metrics(account_id: str, access_token: str):
         total_engagement = sum(metrics["engagement"] for _, metrics in campaign_results)
         
         # Calcula os valores globais
-        global_ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0.0
-        global_cpc = (total_spend / total_clicks) if total_clicks > 0 else 0.0
-
-        # Formata o CTR global como porcentagem com no máximo 3 caracteres
-        global_ctr_int = int(round(global_ctr))
-        if global_ctr_int > 99:
-            global_ctr_int = 99
-        global_ctr_str = f"{global_ctr_int}%"
-        
-        # Formata o CPC global para no máximo 3 caracteres:
-        # Se for menor que 10, usa uma casa decimal; se for 10 ou maior, usa inteiro.
-        if global_cpc < 10:
-            cpc_str = f"{global_cpc:.1f}"
-        else:
-            cpc_str = f"{int(round(global_cpc))}"
-        # Caso o resultado exceda 3 caracteres, trunca (não recomendado, mas para garantir o máximo de 3 caracteres)
-        cpc_str = cpc_str[:3]
+        global_ctr_value = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0.0
+        global_cpc_value = (total_spend / total_clicks) if total_clicks > 0 else 0.0
         
         total_active_campaigns = len(campaign_results)
         recent_campaigns_total = total_active_campaigns
@@ -195,8 +207,8 @@ async def fetch_metrics(account_id: str, access_token: str):
             "active_campaigns": total_active_campaigns,
             "total_impressions": total_impressions,
             "total_clicks": total_clicks,
-            "ctr": global_ctr_str,  # Global CTR formatado com até 3 caracteres
-            "cpc": cpc_str,         # CPC global formatado com até 3 caracteres
+            "ctr": format_ctr_truncate(global_ctr_value),  # Ex: "1%" ou "1.0%" (máx. 3 caracteres)
+            "cpc": format_cpc_truncate(global_cpc_value),    # Ex: "0.2" (máx. 3 caracteres)
             "conversions": total_conversions,
             "spent": total_spend,
             "engajamento": total_engagement,
@@ -230,4 +242,5 @@ async def get_metrics(payload: dict = Body(...)):
 
 if __name__ == "__main__":
     import uvicorn
+    # Use a porta esperada pela sua aplicação FlutterFlow (por exemplo, 8000)
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
