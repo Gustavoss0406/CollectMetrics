@@ -30,12 +30,12 @@ def format_currency(value: float) -> str:
 
 def format_cpc_truncate(value: float) -> str:
     """
-    Formata o CPC global truncando para 1 dígito decimal sem arredondar.
-    Se o resultado tiver mais de 3 caracteres, utiliza somente a parte inteira.
+    Trunca o CPC global para 1 dígito decimal sem arredondar.
+    Se o resultado (como string) tiver mais de 3 caracteres, utiliza somente a parte inteira.
     """
     # Trunca sem arredondar
     truncated = int(value * 10) / 10
-    s = f"{truncated:.1f}"
+    s = f"{truncated:.1f}"  # ex: "0.2"
     if len(s) > 3:
         s = str(int(truncated))
         s = s[:3]
@@ -43,10 +43,9 @@ def format_cpc_truncate(value: float) -> str:
 
 def format_ctr_truncate(value: float) -> str:
     """
-    Formata o CTR global (em porcentagem) truncando para 1 dígito decimal sem arredondar.
+    Trunca o CTR global (em porcentagem) para 1 dígito decimal sem arredondar.
     Se o resultado (incluindo o '%') tiver mais de 3 caracteres, utiliza somente a parte inteira seguida de '%'.
     """
-    # Trunca sem arredondar
     truncated = int(value * 10) / 10
     s = f"{truncated:.1f}%"
     if len(s) > 3:
@@ -59,10 +58,9 @@ async def fetch_metrics(account_id: str, access_token: str):
     start_time = time.perf_counter()
     logging.debug(f"Iniciando fetch_metrics para account_id: {account_id}")
     
-    # Timeout total de 3 segundos para evitar esperas longas
     timeout = aiohttp.ClientTimeout(total=3)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        # URL e parâmetros para buscar campanhas ativas
+        # Busca as campanhas ativas
         campaigns_url = f"https://graph.facebook.com/v16.0/act_{account_id}/campaigns"
         filtering = json.dumps([{
             "field": "effective_status",
@@ -75,7 +73,6 @@ async def fetch_metrics(account_id: str, access_token: str):
             "access_token": access_token
         }
         
-        # Função auxiliar para realizar requisições GET com logs HTTP
         async def fetch(url, params):
             req_start = time.perf_counter()
             logging.debug(f"HTTP REQUEST: GET {url} com params: {params}")
@@ -91,8 +88,6 @@ async def fetch_metrics(account_id: str, access_token: str):
                 logging.debug(f"HTTP RESPONSE JSON: {url} retornou: {response_json}")
                 return response_json
         
-        # Função auxiliar para buscar insights individuais para cada campanha ativa.
-        # Retorna (campaign_obj, metrics) mantendo os mesmos campos originais.
         async def get_campaign_insights(camp):
             campaign_id = camp.get("id", "")
             campaign_obj = {
@@ -101,7 +96,7 @@ async def fetch_metrics(account_id: str, access_token: str):
                 "cpc": "0.00",
                 "impressions": 0,
                 "clicks": 0,
-                "ctr": "0.00%"  # Mantém a formatação original para campanhas individuais
+                "ctr": "0.00%"  # Mantém a formatação original para cada campanha
             }
             campaign_insights_url = f"https://graph.facebook.com/v16.0/{campaign_id}/insights"
             params_campaign_insights = {
@@ -188,16 +183,19 @@ async def fetch_metrics(account_id: str, access_token: str):
         else:
             campaign_results = []
         
-        # Agrega as métricas globais a partir dos insights das campanhas ativas
+        # Agregação das métricas globais
         total_impressions = sum(metrics["impressions"] for _, metrics in campaign_results)
         total_clicks = sum(metrics["clicks"] for _, metrics in campaign_results)
         total_spend = sum(metrics["spend"] for _, metrics in campaign_results)
         total_conversions = sum(metrics["conversions"] for _, metrics in campaign_results)
         total_engagement = sum(metrics["engagement"] for _, metrics in campaign_results)
         
-        # Calcula os valores globais
         global_ctr_value = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0.0
         global_cpc_value = (total_spend / total_clicks) if total_clicks > 0 else 0.0
+        
+        # Log dos valores globais antes da formatação final
+        logging.debug(f"Valores globais brutos: impressions={total_impressions}, clicks={total_clicks}, spend={total_spend}")
+        logging.debug(f"Global CTR (valor): {global_ctr_value} | Global CPC (valor): {global_cpc_value}")
         
         total_active_campaigns = len(campaign_results)
         recent_campaigns_total = total_active_campaigns
@@ -207,8 +205,8 @@ async def fetch_metrics(account_id: str, access_token: str):
             "active_campaigns": total_active_campaigns,
             "total_impressions": total_impressions,
             "total_clicks": total_clicks,
-            "ctr": format_ctr_truncate(global_ctr_value),  # Ex: "1%" ou "1.0%" (máx. 3 caracteres)
-            "cpc": format_cpc_truncate(global_cpc_value),    # Ex: "0.2" (máx. 3 caracteres)
+            "ctr": format_ctr_truncate(global_ctr_value),  # ex: "1%" ou "1.0%" (máx. 3 caracteres)
+            "cpc": format_cpc_truncate(global_cpc_value),    # ex: "0.2" (máx. 3 caracteres)
             "conversions": total_conversions,
             "spent": total_spend,
             "engajamento": total_engagement,
@@ -242,5 +240,5 @@ async def get_metrics(payload: dict = Body(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    # Use a porta esperada pela sua aplicação FlutterFlow (por exemplo, 8000)
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+    # Utilize a porta esperada pela sua aplicação FlutterFlow; neste exemplo, 8000.
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
